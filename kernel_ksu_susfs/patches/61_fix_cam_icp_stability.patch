@@ -1,0 +1,93 @@
+--- a/drivers/media/platform/msm/camera/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c
++++ b/drivers/media/platform/msm/camera/cam_icp/icp_hw/icp_hw_mgr/cam_icp_hw_mgr.c
+@@ -272,6 +272,7 @@
+ 		ctx_data = &hw_mgr->ctx_data[i];
+ 		mutex_lock(&ctx_data->ctx_mutex);
+ 		if ((ctx_data->state == CAM_ICP_CTX_STATE_ACQUIRED) &&
++			ctx_data->icp_dev_acquire_info &&
+ 			(ICP_DEV_TYPE_TO_CLK_TYPE(ctx_data->
+ 			icp_dev_acquire_info->dev_type) == clk_info->hw_type))
+ 			cam_icp_ctx_clk_info_init(ctx_data);
+@@ -619,6 +620,7 @@
+ 	for (i = 0; i < CAM_ICP_CTX_MAX; i++) {
+ 		ctx_data = &hw_mgr->ctx_data[i];
+ 		if (ctx_data->state == CAM_ICP_CTX_STATE_ACQUIRED &&
++			ctx_data->icp_dev_acquire_info &&
+ 			ICP_DEV_TYPE_TO_CLK_TYPE(
+ 			ctx_data->icp_dev_acquire_info->dev_type) ==
+ 			ICP_DEV_TYPE_TO_CLK_TYPE(dev_type))
+@@ -1427,22 +1429,25 @@
+ 		CAM_ERR(CAM_ICP, "Invalid Context");
+ 		return -EINVAL;
+ 	}
+-	CAM_DBG(CAM_ICP, "ctx : %p, request_id :%lld",
+-		(void *)ctx_data->context_priv, request_id);
+-
+-	clk_type = ICP_DEV_TYPE_TO_CLK_TYPE(ctx_data->icp_dev_acquire_info->
+-		dev_type);
+-	cam_icp_device_timer_reset(&icp_hw_mgr, clk_type);
+ 
+ 	mutex_lock(&ctx_data->ctx_mutex);
+-	cam_icp_ctx_timer_reset(ctx_data);
+-	if (ctx_data->state != CAM_ICP_CTX_STATE_ACQUIRED) {
++	if (ctx_data->state != CAM_ICP_CTX_STATE_ACQUIRED ||
++		!ctx_data->icp_dev_acquire_info ||
++		!ctx_data->hfi_frame_process.bitmap) {
+ 		CAM_DBG(CAM_ICP, "ctx %u is in %d state",
+ 			ctx_data->ctx_id, ctx_data->state);
+ 		mutex_unlock(&ctx_data->ctx_mutex);
+ 		return 0;
+ 	}
+ 
++	CAM_DBG(CAM_ICP, "ctx : %p, request_id :%lld",
++		(void *)ctx_data->context_priv, request_id);
++
++	clk_type = ICP_DEV_TYPE_TO_CLK_TYPE(ctx_data->icp_dev_acquire_info->
++		dev_type);
++	cam_icp_device_timer_reset(&icp_hw_mgr, clk_type);
++	cam_icp_ctx_timer_reset(ctx_data);
++
+ 	hfi_frame_process = &ctx_data->hfi_frame_process;
+ 	for (i = 0; i < CAM_FRAME_CMD_MAX; i++)
+ 		if (hfi_frame_process->request_id[i] == request_id)
+@@ -1457,7 +1462,8 @@
+ 	idx = i;
+ 
+ 	buf_data.request_id = hfi_frame_process->request_id[idx];
+-	ctx_data->ctxt_event_cb(ctx_data->context_priv, flag, &buf_data);
++	if (ctx_data->ctxt_event_cb)
++		ctx_data->ctxt_event_cb(ctx_data->context_priv, flag, &buf_data);
+ 	hfi_frame_process->request_id[idx] = 0;
+ 	if (ctx_data->hfi_frame_process.in_resource[idx] > 0) {
+ 		CAM_DBG(CAM_ICP, "Delete merged sync in object: %d",
+@@ -1676,6 +1682,10 @@
+ 		ioconfig_ack = (struct hfi_msg_ipebps_async_ack *)msg_ptr;
+ 		ctx_data =
+ 			(struct cam_icp_hw_ctx_data *)ioconfig_ack->user_data1;
++		if (!ctx_data) {
++			CAM_ERR(CAM_ICP, "Invalid Context in ABORT ack");
++			return -EINVAL;
++		}
+ 		if (ctx_data->state != CAM_ICP_CTX_STATE_FREE)
+ 			complete(&ctx_data->wait_complete);
+ 		CAM_DBG(CAM_ICP, "received IPE/BPS/ ABORT: ctx_state =%d",
+@@ -1686,6 +1696,10 @@
+ 		ioconfig_ack = (struct hfi_msg_ipebps_async_ack *)msg_ptr;
+ 		ctx_data =
+ 			(struct cam_icp_hw_ctx_data *)ioconfig_ack->user_data1;
++		if (!ctx_data) {
++			CAM_ERR(CAM_ICP, "Invalid Context in DESTROY ack");
++			return -EINVAL;
++		}
+ 		if ((ctx_data->state == CAM_ICP_CTX_STATE_RELEASE) ||
+ 			(ctx_data->state == CAM_ICP_CTX_STATE_IN_USE)) {
+ 			complete(&ctx_data->wait_complete);
+@@ -1817,7 +1831,7 @@
+ 
+ 	rc = hfi_read_message(icp_hw_mgr.msg_buf, Q_MSG, &read_len);
+ 	if (rc) {
+-		CAM_ERR(CAM_ICP, "Unable to read msg q");
++		CAM_DBG(CAM_ICP, "Unable to read msg q rc=%d", rc);
+ 	} else {
+ 		read_len = read_len << BYTE_WORD_SHIFT;
+ 		msg_ptr = (uint32_t *)icp_hw_mgr.msg_buf;

@@ -1,0 +1,129 @@
+--- a/drivers/misc/sony_camera/sony_camera.c
++++ b/drivers/misc/sony_camera/sony_camera.c
+@@ -1324,11 +1324,14 @@
+ {
+ 	int32_t rc = -EINVAL;
+ 	int i = 0;
++	int retry_cnt = SONY_CAMERA_MAX_RETRY_COUNT;
+ 	struct cam_cci_ctrl cci_ctrl;
+ 	struct cam_sensor_i2c_reg_array* reg_settings;
+ 	bool need_free = FALSE;
+ 	if (len > SONY_CAMERA_I2C_MAX_LEN) {
+ 		reg_settings = vzalloc(sizeof(struct cam_sensor_i2c_reg_array) * len);
++		if (!reg_settings)
++			return -ENOMEM;
+ 		need_free = TRUE;
+ 	} else {
+ 		memset(data->i2c_data, 0, SONY_CAMERA_I2C_MAX_SIZE);
+@@ -1341,16 +1344,25 @@
+ 		reg_settings[i].delay = 0;
+ 		reg_settings[i].data_mask = 0;
+ 	}
+-	memset(&cci_ctrl, 0, sizeof(cci_ctrl));
+-	cci_ctrl.cmd = MSM_CCI_I2C_WRITE_BURST;
+-	cci_ctrl.cci_info = &data->cci_info;
+-	cci_ctrl.cci_info->sid = slave_addr >> 1;
+-	cci_ctrl.cfg.cci_i2c_write_cfg.reg_setting = reg_settings;
+-	cci_ctrl.cfg.cci_i2c_write_cfg.data_type = 1; // TODO: CAMERA_SENSOR_I2C_TYPE_BYTE
+-	cci_ctrl.cfg.cci_i2c_write_cfg.addr_type = type;
+-	cci_ctrl.cfg.cci_i2c_write_cfg.size = len;
+-	rc = v4l2_subdev_call(data->cci_info.cci_subdev,
+-		core, ioctl, VIDIOC_MSM_CCI_CFG, &cci_ctrl);
++	do {
++		memset(&cci_ctrl, 0, sizeof(cci_ctrl));
++		cci_ctrl.cmd = MSM_CCI_I2C_WRITE_BURST;
++		cci_ctrl.cci_info = &data->cci_info;
++		cci_ctrl.cci_info->sid = slave_addr >> 1;
++		cci_ctrl.cfg.cci_i2c_write_cfg.reg_setting = reg_settings;
++		cci_ctrl.cfg.cci_i2c_write_cfg.data_type = 1; // TODO: CAMERA_SENSOR_I2C_TYPE_BYTE
++		cci_ctrl.cfg.cci_i2c_write_cfg.addr_type = type;
++		cci_ctrl.cfg.cci_i2c_write_cfg.size = len;
++		rc = v4l2_subdev_call(data->cci_info.cci_subdev,
++			core, ioctl, VIDIOC_MSM_CCI_CFG, &cci_ctrl);
++		if (rc == 0 && cci_ctrl.status >= 0)
++			break;
++		LOGE("Retry write slave0x%04x,addr0x%04x,len%u rc=%d status=%d\n",
++			slave_addr, addr, len, rc, cci_ctrl.status);
++		if (rc == 0 && cci_ctrl.status < 0)
++			rc = cci_ctrl.status;
++		usleep_range(1000, 3000);
++	} while (--retry_cnt > 0);
+ 	if (need_free)
+ 		vfree(reg_settings);
+ 	return rc;
+@@ -2150,10 +2162,11 @@
+ {
+ 	int rc = 0;
+ 
++	mutex_lock(&data->state_lock);
+ 	if (data->state == SONY_CAMERA_STATE_POWER_DOWN) {
+-	    goto exit;
++		mutex_unlock(&data->state_lock);
++		goto exit;
+ 	}
+-	mutex_lock(&data->state_lock);
+ 	data->state = SONY_CAMERA_STATE_POWER_DOWN;
+ 	mutex_unlock(&data->state_lock);
+ 
+@@ -2172,18 +2185,29 @@
+ 		rc = kthread_stop(data->sensor_task);
+ 		if (rc < 0)
+ 			LOGE("kthread_stop failed %d\n", rc);
++		data->sensor_task = NULL;
+ 		sony_camera_flush_task_queue(data);
+-		if (data->tx_buf)
+-			kfree(data->tx_buf);
+-		if (data->rx_buf)
+-			kfree(data->rx_buf);
+-		if (data->spi_header)
+-			kfree(data->spi_header);
+-		if (data->spi_payload)
+-			kfree(data->spi_payload);
+ 	}
+-	if (data->i2c_data)
++	if (data->tx_buf) {
++		kfree(data->tx_buf);
++		data->tx_buf = NULL;
++	}
++	if (data->rx_buf) {
++		kfree(data->rx_buf);
++		data->rx_buf = NULL;
++	}
++	if (data->spi_header) {
++		kfree(data->spi_header);
++		data->spi_header = NULL;
++	}
++	if (data->spi_payload) {
++		kfree(data->spi_payload);
++		data->spi_payload = NULL;
++	}
++	if (data->i2c_data) {
+ 		kfree(data->i2c_data);
++		data->i2c_data = NULL;
++	}
+ 	rc = sony_camera_cci_deinit(data);
+ 	if (rc < 0)
+ 		LOGE("%s cci_deinit failed\n", __func__);
+@@ -2212,9 +2236,13 @@
+ 	int rc = 0;
+ 	uint8_t retry_cnt = SONY_CAMERA_MAX_RETRY_COUNT;
+ 
++	mutex_lock(&data->state_lock);
+ 	if (data->state == SONY_CAMERA_STATE_POWER_UP) {
+-	    goto exit;
++		mutex_unlock(&data->state_lock);
++		goto exit;
+ 	}
++	mutex_unlock(&data->state_lock);
++	sony_camera_clear(data);
+ 
+ 	LOGD("%s: %d\n", __func__, __LINE__);
+ 	rc = sony_camera_gpio_init(data);
+@@ -2324,6 +2352,7 @@
+ 	}
+ 	if (!data->i2c_data) {
+ 		LOGE("%s: i2c data kmalloc failed\n", __func__);
++		sony_camera_power_down(data);
+ 		return -ENOMEM;
+ 	}
+ 	rc = sony_camera_power_ctrl(data, true);

@@ -1,0 +1,83 @@
+--- a/scripts/dtc/dtc-lexer.l	2026-11-19 08:51:16.197954097 +0700
++++ b/scripts/dtc/dtc-lexer.l	2026-11-19 09:41:56.207344399 +0700
+@@ -38,7 +38,7 @@
+ #include "srcpos.h"
+ #include "dtc-parser.tab.h"
+ 
+-YYLTYPE yylloc;
++extern YYLTYPE yylloc;
+ extern bool treesource_error;
+ 
+ /* CAUTION: this will stop working if we ever use yyless() or yyunput() */
+--- a/scripts/sign-file.c	2026-11-19 08:51:16.207884177 +0700
++++ b/scripts/sign-file.c	2026-11-19 09:41:56.208910241 +0700
+@@ -27,7 +27,9 @@
+ #include <openssl/evp.h>
+ #include <openssl/pem.h>
+ #include <openssl/err.h>
++#if !defined(OPENSSL_NO_ENGINE) && OPENSSL_VERSION_NUMBER < 0x30000000L
+ #include <openssl/engine.h>
++#endif
+ 
+ /*
+  * Use CMS if we have openssl-1.0.0 or newer available - otherwise we have to
+@@ -135,6 +137,7 @@
+ 	EVP_PKEY *private_key;
+ 
+ 	if (!strncmp(private_key_name, "pkcs11:", 7)) {
++#if !defined(OPENSSL_NO_ENGINE) && OPENSSL_VERSION_NUMBER < 0x30000000L
+ 		ENGINE *e;
+ 
+ 		ENGINE_load_builtin_engines();
+@@ -151,6 +154,9 @@
+ 		private_key = ENGINE_load_private_key(e, private_key_name,
+ 						      NULL, NULL);
+ 		ERR(!private_key, "%s", private_key_name);
++#else
++		ERR(1, "PKCS#11 ENGINE unsupported on OpenSSL 3+");
++#endif
+ 	} else {
+ 		BIO *b;
+ 
+--- a/scripts/extract-cert.c	2026-11-19 08:51:16.199225465 +0700
++++ b/scripts/extract-cert.c	2026-11-19 09:41:56.209937357 +0700
+@@ -21,7 +21,10 @@
+ #include <openssl/bio.h>
+ #include <openssl/pem.h>
+ #include <openssl/err.h>
++#include <openssl/opensslv.h>
++#if !defined(OPENSSL_NO_ENGINE) && OPENSSL_VERSION_NUMBER < 0x30000000L
+ #include <openssl/engine.h>
++#endif
+ 
+ #define PKEY_ID_PKCS7 2
+ 
+@@ -112,6 +115,7 @@
+ 		fclose(f);
+ 		exit(0);
+ 	} else if (!strncmp(cert_src, "pkcs11:", 7)) {
++#if !defined(OPENSSL_NO_ENGINE) && OPENSSL_VERSION_NUMBER < 0x30000000L
+ 		ENGINE *e;
+ 		struct {
+ 			const char *cert_id;
+@@ -134,6 +138,9 @@
+ 		ENGINE_ctrl_cmd(e, "LOAD_CERT_CTRL", 0, &parms, NULL, 1);
+ 		ERR(!parms.cert, "Get X.509 from PKCS#11");
+ 		write_cert(parms.cert);
++#else
++		ERR(1, "PKCS#11 ENGINE unsupported on OpenSSL 3+");
++#endif
+ 	} else {
+ 		BIO *b;
+ 		X509 *x509;
+--- a/scripts/Makefile.dtbo	2026-11-19 08:51:16.192485239 +0700
++++ b/scripts/Makefile.dtbo	2026-11-19 09:41:56.210086085 +0700
+@@ -14,7 +14,7 @@
+ 	$(addprefix $(obj)/,$($(@F)-base)),\
+ 		$(if $(m),\
+ 			$(DTC_OVERLAY_TEST) $(m) $@ \
+-			$(dot-target).$(patsubst $(obj)/%.dtb,%,$(m)).tmp;))\
++			$(dot-target).$(patsubst %.dtb,%,$(notdir $(m))).tmp;))\
+ 			true
+ else
+ cmd_dtbo_verify = true

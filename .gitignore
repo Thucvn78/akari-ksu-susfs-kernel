@@ -1,0 +1,22 @@
+# Ignore large stock firmware, ROM images, APKs, and local staging workspaces
+*.img
+*.sin
+*.ta
+*.zip
+*.apk
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+__pycache__/
+*.pyc
+.DS_Store
+
+/H8216_*/
+/SOV37_*/
+/inspect/
+/out/
+/tools/
+/work/
+/kernel_ksu_susfs/build_out/
+/kernel_ksu_susfs/src_cache/
+/kernel_ksu_susfs/toolchain/
