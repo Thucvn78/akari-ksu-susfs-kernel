@@ -114,6 +114,7 @@ patch --batch -p1 -d "${BUILD_SRC}" < "${KSU_ROOT}/patches/20_ksu_next_v3.4_manu
 patch --batch -p1 -d "${BUILD_SRC}" < "${KSU_ROOT}/patches/50_add_susfs_v2.3.0_in_kernel_4.9.186.patch"
 patch --batch -p1 -d "${BUILD_SRC}" < "${KSU_ROOT}/patches/60_fix_sony_camera_stability.patch"
 patch --batch -p1 -d "${BUILD_SRC}" < "${KSU_ROOT}/patches/61_fix_cam_icp_stability.patch"
+patch --batch -p1 -d "${BUILD_SRC}" < "${KSU_ROOT}/patches/62_fix_camera_cci_tcs3490_stability.patch"
 
 # Verify zero reject files
 if find "${BUILD_SRC}" -name "*.rej" | grep -q .; then

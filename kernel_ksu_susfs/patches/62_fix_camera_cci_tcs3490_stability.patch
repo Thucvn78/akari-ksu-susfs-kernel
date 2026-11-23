@@ -1,0 +1,450 @@
+diff -ruN orig/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_core.c mod/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_core.c
+--- a/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_core.c	2026-11-23 16:45:06.198958730 +0700
++++ b/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_core.c	2026-11-23 16:47:05.610445489 +0700
+@@ -44,10 +44,13 @@
+ 	enum cci_i2c_master_t master)
+ {
+ 	int32_t rc = 0;
++	uint32_t i;
++	unsigned long flags;
+ 	struct cam_hw_soc_info *soc_info =
+ 		&cci_dev->soc_info;
+ 	void __iomem *base = soc_info->reg_map[0].mem_base;
+ 
++	reinit_completion(&cci_dev->cci_master_info[master].reset_complete);
+ 	cam_io_w_mb(1 << master, base + CCI_HALT_REQ_ADDR);
+ 	rc = wait_for_completion_timeout(
+ 		&cci_dev->cci_master_info[master].reset_complete, CCI_TIMEOUT);
+@@ -58,6 +61,7 @@
+ 
+ 		/* Set reset pending flag to TRUE */
+ 		cci_dev->cci_master_info[master].reset_pending = TRUE;
++		reinit_completion(&cci_dev->cci_master_info[master].reset_complete);
+ 
+ 		/* Set proper mask to RESET CMD address based on MASTER */
+ 		if (master == MASTER_0)
+@@ -74,6 +78,14 @@
+ 		if (rc <= 0)
+ 			CAM_ERR(CAM_CCI, "wait failed %d", rc);
+ 	}
++	cci_dev->cci_master_info[master].reset_pending = FALSE;
++	cci_dev->cci_master_info[master].status = 0;
++	for (i = 0; i < NUM_QUEUES; i++) {
++		spin_lock_irqsave(&cci_dev->cci_master_info[master].lock_q[i], flags);
++		atomic_set(&cci_dev->cci_master_info[master].q_free[i], 0);
++		atomic_set(&cci_dev->cci_master_info[master].done_pending[i], 0);
++		spin_unlock_irqrestore(&cci_dev->cci_master_info[master].lock_q[i], flags);
++	}
+ }
+ 
+ static int32_t cam_cci_validate_queue(struct cci_device *cci_dev,
+@@ -97,6 +109,7 @@
+ 		cci_i2c_queue_info[master][queue].max_queue_size) {
+ 		uint32_t reg_val = 0;
+ 		uint32_t report_val = CCI_I2C_REPORT_CMD | (1 << 8);
++		unsigned long flags;
+ 
+ 		CAM_DBG(CAM_CCI, "CCI_I2C_REPORT_CMD");
+ 		cam_io_w_mb(report_val,
+@@ -110,12 +123,14 @@
+ 			CCI_I2C_M0_Q0_EXEC_WORD_CNT_ADDR + reg_offset);
+ 		reg_val = 1 << ((master * 2) + queue);
+ 		CAM_DBG(CAM_CCI, "CCI_QUEUE_START_ADDR");
+-		atomic_set(&cci_dev->cci_master_info[master].
+-						done_pending[queue], 1);
++		spin_lock_irqsave(&cci_dev->cci_master_info[master].lock_q[queue], flags);
++		reinit_completion(&cci_dev->cci_master_info[master].report_q[queue]);
++		atomic_set(&cci_dev->cci_master_info[master].done_pending[queue], 1);
++		atomic_set(&cci_dev->cci_master_info[master].q_free[queue], 1);
+ 		cam_io_w_mb(reg_val, base +
+ 			CCI_QUEUE_START_ADDR);
++		spin_unlock_irqrestore(&cci_dev->cci_master_info[master].lock_q[queue], flags);
+ 		CAM_DBG(CAM_CCI, "wait_for_completion_timeout");
+-		atomic_set(&cci_dev->cci_master_info[master].q_free[queue], 1);
+ 		rc = wait_for_completion_timeout(&cci_dev->
+ 			cci_master_info[master].report_q[queue], CCI_TIMEOUT);
+ 		if (rc <= 0) {
+@@ -289,6 +304,7 @@
+ 	enum cci_i2c_master_t master,
+ 	enum cci_i2c_queue_t queue)
+ {
++	unsigned long flags;
+ 	struct cam_hw_soc_info *soc_info =
+ 		&cci_dev->soc_info;
+ 	void __iomem *base = soc_info->reg_map[0].mem_base;
+@@ -296,8 +312,11 @@
+ 	uint32_t reg_val = 1 << ((master * 2) + queue);
+ 
+ 	cam_cci_load_report_cmd(cci_dev, master, queue);
++	spin_lock_irqsave(&cci_dev->cci_master_info[master].lock_q[queue], flags);
++	reinit_completion(&cci_dev->cci_master_info[master].report_q[queue]);
+ 	atomic_set(&cci_dev->cci_master_info[master].q_free[queue], 1);
+ 	atomic_set(&cci_dev->cci_master_info[master].done_pending[queue], 1);
++	spin_unlock_irqrestore(&cci_dev->cci_master_info[master].lock_q[queue], flags);
+ 	cam_io_w_mb(reg_val, base +
+ 		CCI_QUEUE_START_ADDR);
+ 
+@@ -309,8 +328,11 @@
+ 	enum cci_i2c_queue_t queue)
+ {
+ 	int32_t rc = 0;
++	unsigned long flags;
+ 
++	spin_lock_irqsave(&cci_dev->cci_master_info[master].lock_q[queue], flags);
+ 	if (atomic_read(&cci_dev->cci_master_info[master].q_free[queue]) == 0) {
++		spin_unlock_irqrestore(&cci_dev->cci_master_info[master].lock_q[queue], flags);
+ 		rc = cam_cci_lock_queue(cci_dev, master, queue, 0);
+ 		if (rc < 0) {
+ 			CAM_ERR(CAM_CCI, "failed rc: %d", rc);
+@@ -324,6 +346,7 @@
+ 	} else {
+ 		atomic_set(&cci_dev->cci_master_info[master].
+ 						done_pending[queue], 1);
++		spin_unlock_irqrestore(&cci_dev->cci_master_info[master].lock_q[queue], flags);
+ 		rc = cam_cci_wait(cci_dev, master, queue);
+ 		if (rc < 0) {
+ 			CAM_ERR(CAM_CCI, "failed rc %d", rc);
+@@ -367,17 +390,21 @@
+ 	enum cci_i2c_master_t master,
+ 	enum cci_i2c_queue_t queue)
+ {
++	unsigned long flags;
+ 	struct cam_hw_soc_info *soc_info =
+ 		&cci_dev->soc_info;
+ 	void __iomem *base = soc_info->reg_map[0].mem_base;
+ 	uint32_t reg_val = 1 << ((master * 2) + queue);
+ 
++	spin_lock_irqsave(&cci_dev->cci_master_info[master].lock_q[queue], flags);
+ 	if (atomic_read(&cci_dev->cci_master_info[master].q_free[queue]) == 0) {
+ 		cam_cci_load_report_cmd(cci_dev, master, queue);
++		reinit_completion(&cci_dev->cci_master_info[master].report_q[queue]);
+ 		atomic_set(&cci_dev->cci_master_info[master].q_free[queue], 1);
+ 		cam_io_w_mb(reg_val, base +
+ 			CCI_QUEUE_START_ADDR);
+ 	}
++	spin_unlock_irqrestore(&cci_dev->cci_master_info[master].lock_q[queue], flags);
+ }
+ 
+ static int32_t cam_cci_process_full_q(struct cci_device *cci_dev,
+@@ -385,16 +412,20 @@
+ 	enum cci_i2c_queue_t queue)
+ {
+ 	int32_t rc = 0;
++	unsigned long flags;
+ 
++	spin_lock_irqsave(&cci_dev->cci_master_info[master].lock_q[queue], flags);
+ 	if (atomic_read(&cci_dev->cci_master_info[master].q_free[queue]) == 1) {
+ 		atomic_set(&cci_dev->cci_master_info[master].
+ 						done_pending[queue], 1);
++		spin_unlock_irqrestore(&cci_dev->cci_master_info[master].lock_q[queue], flags);
+ 		rc = cam_cci_wait(cci_dev, master, queue);
+ 		if (rc < 0) {
+ 			CAM_ERR(CAM_CCI, "failed rc %d", rc);
+ 			return rc;
+ 		}
+ 	} else {
++		spin_unlock_irqrestore(&cci_dev->cci_master_info[master].lock_q[queue], flags);
+ 		rc = cam_cci_wait_report_cmd(cci_dev, master, queue);
+ 		if (rc < 0) {
+ 			CAM_ERR(CAM_CCI, "failed rc %d", rc);
+@@ -640,7 +671,12 @@
+ 	cam_io_w_mb(val, base + CCI_I2C_M0_Q0_LOAD_DATA_ADDR +
+ 		reg_offset);
+ 
+-	atomic_set(&cci_dev->cci_master_info[master].q_free[queue], 0);
++	{
++		unsigned long flags;
++		spin_lock_irqsave(&cci_dev->cci_master_info[master].lock_q[queue], flags);
++		atomic_set(&cci_dev->cci_master_info[master].q_free[queue], 0);
++		spin_unlock_irqrestore(&cci_dev->cci_master_info[master].lock_q[queue], flags);
++	}
+ 
+ 	max_queue_size = cci_dev->cci_i2c_queue_info[master][queue].
+ 			max_queue_size;
+@@ -949,12 +985,13 @@
+ 	cam_io_w_mb(val, base + CCI_I2C_M0_Q0_EXEC_WORD_CNT_ADDR
+ 			+ master * 0x200 + queue * 0x100);
+ 
++	reinit_completion(&cci_dev->cci_master_info[master].rd_done);
+ 	val = 1 << ((master * 2) + queue);
+ 	cam_io_w_mb(val, base + CCI_QUEUE_START_ADDR);
+ 	CAM_DBG(CAM_CCI, "wait_for_completion_timeout");
+ 
+ 	rc = wait_for_completion_timeout(&cci_dev->
+-		cci_master_info[master].reset_complete, CCI_TIMEOUT);
++		cci_master_info[master].rd_done, CCI_TIMEOUT);
+ 	if (rc <= 0) {
+ #ifdef DUMP_CCI_REGISTERS
+ 		cam_cci_dump_registers(cci_dev, master, queue);
+@@ -964,6 +1001,10 @@
+ 		CAM_ERR(CAM_CCI, "wait_for_completion_timeout rc = %d", rc);
+ 		cam_cci_flush_queue(cci_dev, master);
+ 		goto rel_mutex;
++	} else if (cci_dev->cci_master_info[master].status) {
++		rc = cci_dev->cci_master_info[master].status;
++		cam_cci_flush_queue(cci_dev, master);
++		goto rel_mutex;
+ 	} else {
+ 		rc = 0;
+ 	}
+diff -ruN orig/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_dev.c mod/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_dev.c
+--- a/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_dev.c	2026-11-23 16:45:06.169537028 +0700
++++ b/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_dev.c	2026-11-23 16:47:05.607176677 +0700
+@@ -18,7 +18,7 @@
+ #define CCI_MAX_DELAY 1000000
+ /* sony extension begin */
+ #if 1
+-#define CCI_TIMEOUT msecs_to_jiffies(50)
++#define CCI_TIMEOUT msecs_to_jiffies(250)
+ #else
+ #define CCI_TIMEOUT msecs_to_jiffies(500)
+ #endif
+@@ -71,6 +71,7 @@
+ 	struct cam_hw_soc_info *soc_info =
+ 		&cci_dev->soc_info;
+ 	void __iomem *base = soc_info->reg_map[0].mem_base;
++	unsigned long flags;
+ 
+ 	irq = cam_io_r_mb(base + CCI_IRQ_STATUS_0_ADDR);
+ 	cam_io_w_mb(irq, base + CCI_IRQ_CLEAR_0_ADDR);
+@@ -92,55 +93,63 @@
+ 	}
+ 	if (irq & CCI_IRQ_STATUS_0_I2C_M0_RD_DONE_BMSK) {
+ 		cci_dev->cci_master_info[MASTER_0].status = 0;
+-		complete(&cci_dev->cci_master_info[MASTER_0].reset_complete);
++		complete(&cci_dev->cci_master_info[MASTER_0].rd_done);
+ 	}
+ 	if (irq & CCI_IRQ_STATUS_0_I2C_M0_Q0_REPORT_BMSK) {
+ 		struct cam_cci_master_info *cci_master_info;
+ 
+ 		cci_master_info = &cci_dev->cci_master_info[MASTER_0];
++		spin_lock_irqsave(&cci_master_info->lock_q[QUEUE_0], flags);
+ 		atomic_set(&cci_master_info->q_free[QUEUE_0], 0);
+ 		cci_master_info->status = 0;
+ 		if (atomic_read(&cci_master_info->done_pending[QUEUE_0]) == 1) {
+ 			complete(&cci_master_info->report_q[QUEUE_0]);
+ 			atomic_set(&cci_master_info->done_pending[QUEUE_0], 0);
+ 		}
++		spin_unlock_irqrestore(&cci_master_info->lock_q[QUEUE_0], flags);
+ 	}
+ 	if (irq & CCI_IRQ_STATUS_0_I2C_M0_Q1_REPORT_BMSK) {
+ 		struct cam_cci_master_info *cci_master_info;
+ 
+ 		cci_master_info = &cci_dev->cci_master_info[MASTER_0];
++		spin_lock_irqsave(&cci_master_info->lock_q[QUEUE_1], flags);
+ 		atomic_set(&cci_master_info->q_free[QUEUE_1], 0);
+ 		cci_master_info->status = 0;
+ 		if (atomic_read(&cci_master_info->done_pending[QUEUE_1]) == 1) {
+ 			complete(&cci_master_info->report_q[QUEUE_1]);
+ 			atomic_set(&cci_master_info->done_pending[QUEUE_1], 0);
+ 		}
++		spin_unlock_irqrestore(&cci_master_info->lock_q[QUEUE_1], flags);
+ 	}
+ 	if (irq & CCI_IRQ_STATUS_0_I2C_M1_RD_DONE_BMSK) {
+ 		cci_dev->cci_master_info[MASTER_1].status = 0;
+-		complete(&cci_dev->cci_master_info[MASTER_1].reset_complete);
++		complete(&cci_dev->cci_master_info[MASTER_1].rd_done);
+ 	}
+ 	if (irq & CCI_IRQ_STATUS_0_I2C_M1_Q0_REPORT_BMSK) {
+ 		struct cam_cci_master_info *cci_master_info;
+ 
+ 		cci_master_info = &cci_dev->cci_master_info[MASTER_1];
++		spin_lock_irqsave(&cci_master_info->lock_q[QUEUE_0], flags);
+ 		atomic_set(&cci_master_info->q_free[QUEUE_0], 0);
+ 		cci_master_info->status = 0;
+ 		if (atomic_read(&cci_master_info->done_pending[QUEUE_0]) == 1) {
+ 			complete(&cci_master_info->report_q[QUEUE_0]);
+ 			atomic_set(&cci_master_info->done_pending[QUEUE_0], 0);
+ 		}
++		spin_unlock_irqrestore(&cci_master_info->lock_q[QUEUE_0], flags);
+ 	}
+ 	if (irq & CCI_IRQ_STATUS_0_I2C_M1_Q1_REPORT_BMSK) {
+ 		struct cam_cci_master_info *cci_master_info;
+ 
+ 		cci_master_info = &cci_dev->cci_master_info[MASTER_1];
++		spin_lock_irqsave(&cci_master_info->lock_q[QUEUE_1], flags);
+ 		atomic_set(&cci_master_info->q_free[QUEUE_1], 0);
+ 		cci_master_info->status = 0;
+ 		if (atomic_read(&cci_master_info->done_pending[QUEUE_1]) == 1) {
+ 			complete(&cci_master_info->report_q[QUEUE_1]);
+ 			atomic_set(&cci_master_info->done_pending[QUEUE_1], 0);
+ 		}
++		spin_unlock_irqrestore(&cci_master_info->lock_q[QUEUE_1], flags);
+ 	}
+ 	if (irq & CCI_IRQ_STATUS_0_I2C_M0_Q0Q1_HALT_ACK_BMSK) {
+ 		cci_dev->cci_master_info[MASTER_0].reset_pending = TRUE;
+diff -ruN orig/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_dev.h mod/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_dev.h
+--- a/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_dev.h	2026-11-23 16:45:06.160410586 +0700
++++ b/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_dev.h	2026-11-23 16:47:05.606415329 +0700
+@@ -47,7 +47,7 @@
+ 
+ /* sony extension begin */
+ #if 1
+-#define CCI_TIMEOUT msecs_to_jiffies(50)
++#define CCI_TIMEOUT msecs_to_jiffies(250)
+ #else
+ #define CCI_TIMEOUT msecs_to_jiffies(500)
+ #endif
+@@ -147,8 +147,10 @@
+ 	uint8_t reset_pending;
+ 	struct mutex mutex;
+ 	struct completion reset_complete;
++	struct completion rd_done;
+ 	struct mutex mutex_q[NUM_QUEUES];
+ 	struct completion report_q[NUM_QUEUES];
++	spinlock_t lock_q[NUM_QUEUES];
+ 	atomic_t done_pending[NUM_QUEUES];
+ };
+ 
+diff -ruN orig/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_soc.c mod/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_soc.c
+--- a/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_soc.c	2026-11-23 16:45:06.181891020 +0700
++++ b/drivers/media/platform/msm/camera/cam_sensor_module/cam_cci/cam_cci_soc.c	2026-11-23 16:47:05.607908695 +0700
+@@ -55,6 +55,8 @@
+ 			/* Re-initialize the completion */
+ 			reinit_completion(&cci_dev->
+ 				cci_master_info[master].reset_complete);
++			reinit_completion(&cci_dev->
++				cci_master_info[master].rd_done);
+ 			for (i = 0; i < NUM_QUEUES; i++)
+ 				reinit_completion(&cci_dev->
+ 					cci_master_info[master].report_q[i]);
+@@ -93,6 +95,7 @@
+ 
+ 	/* Re-initialize the completion */
+ 	reinit_completion(&cci_dev->cci_master_info[master].reset_complete);
++	reinit_completion(&cci_dev->cci_master_info[master].rd_done);
+ 	for (i = 0; i < NUM_QUEUES; i++)
+ 		reinit_completion(&cci_dev->cci_master_info[master].
+ 			report_q[i]);
+@@ -193,12 +196,15 @@
+ 		mutex_init(&new_cci_dev->cci_master_info[i].mutex);
+ 		init_completion(&new_cci_dev->
+ 			cci_master_info[i].reset_complete);
++		init_completion(&new_cci_dev->
++			cci_master_info[i].rd_done);
+ 
+ 		for (j = 0; j < NUM_QUEUES; j++) {
+ 			mutex_init(&new_cci_dev->cci_master_info[i].mutex_q[j]);
++			spin_lock_init(&new_cci_dev->cci_master_info[i].lock_q[j]);
+ 			init_completion(&new_cci_dev->
+ 				cci_master_info[i].report_q[j]);
+-			}
++		}
+ 	}
+ }
+ 
+diff -ruN orig/drivers/misc/sony_camera/sony_camera.c mod/drivers/misc/sony_camera/sony_camera.c
+--- a/drivers/misc/sony_camera/sony_camera.c	2026-11-23 16:45:06.280536936 +0700
++++ b/drivers/misc/sony_camera/sony_camera.c	2026-11-23 16:47:05.613659241 +0700
+@@ -1251,7 +1251,7 @@
+ {
+ 	int rc = 0;
+ 	int i = 0;
+-	int retry_cnt = SONY_CAMERA_MAX_RETRY_COUNT;
++	int retry_cnt = 2;
+ 	uint8_t read_data[len];
+ 	struct cam_cci_ctrl cci_ctrl;
+ 
+@@ -1269,8 +1269,10 @@
+ 		cci_ctrl.cfg.cci_i2c_read_cfg.num_byte = len;
+ 		while ((rc = v4l2_subdev_call(data->cci_info.cci_subdev,
+ 			core, ioctl, VIDIOC_MSM_CCI_CFG, &cci_ctrl)) && retry_cnt) {
++			if (rc == -ETIMEDOUT || rc == -ENODEV)
++				break;
+ 			retry_cnt--;
+-			usleep_range(1000, 3000);
++			usleep_range(500, 1000);
+ 			LOGE("Retry slave0x%04x,addr0x%04x,type0x%02x,len0x%02x\n",
+ 				slave_addr, addr, type, len);
+ 		}
+@@ -1324,7 +1326,7 @@
+ {
+ 	int32_t rc = -EINVAL;
+ 	int i = 0;
+-	int retry_cnt = SONY_CAMERA_MAX_RETRY_COUNT;
++	int retry_cnt = 2;
+ 	struct cam_cci_ctrl cci_ctrl;
+ 	struct cam_sensor_i2c_reg_array* reg_settings;
+ 	bool need_free = FALSE;
+@@ -1361,7 +1363,9 @@
+ 			slave_addr, addr, len, rc, cci_ctrl.status);
+ 		if (rc == 0 && cci_ctrl.status < 0)
+ 			rc = cci_ctrl.status;
+-		usleep_range(1000, 3000);
++		if (rc == -ETIMEDOUT || rc == -ENODEV)
++			break;
++		usleep_range(500, 1000);
+ 	} while (--retry_cnt > 0);
+ 	if (need_free)
+ 		vfree(reg_settings);
+diff -ruN orig/drivers/misc/tcs3490.c mod/drivers/misc/tcs3490.c
+--- a/drivers/misc/tcs3490.c	2026-11-23 16:45:06.220536985 +0700
++++ b/drivers/misc/tcs3490.c	2026-11-23 16:47:05.615761040 +0700
+@@ -246,6 +246,7 @@
+     int wake_irq;
+     int irq_pending;
+     bool unpowered;
++    atomic_t vdd_enabled;
+     bool als_enabled;
+ 	bool is_register_regulator_cam_vio_notify;
+ 	int als_thres_enabled;
+@@ -1269,19 +1270,23 @@
+ 
+ 	if (event & REGULATOR_EVENT_DISABLE) {
+ 		chip = container_of(self, struct tcs3490_chip, cam_io_regulator_cb);
+-		dev_info(&chip->client->dev,
+-			"%s REGULATOR_EVENT_DISABLE occurred event \n", __func__);
+-		if (chip->vdd_supply_enable)
+-			rc = regulator_disable(chip->vdd);
+-		else if (chip->gpio_vdd_enable)
+-			rc = regulator_disable(chip->gpio_vdd);
+-		if (!rc) {
+-			chip->unpowered = true;
++		if (atomic_xchg(&chip->vdd_enabled, 0)) {
+ 			dev_info(&chip->client->dev,
+-				"%s: Regulator vdd disable OK", __func__);
++				"%s REGULATOR_EVENT_DISABLE occurred event \n", __func__);
++			if (chip->vdd_supply_enable)
++				rc = regulator_disable(chip->vdd);
++			else if (chip->gpio_vdd_enable)
++				rc = regulator_disable(chip->gpio_vdd);
++			if (!rc) {
++				chip->unpowered = true;
++				dev_info(&chip->client->dev,
++					"%s: Regulator vdd disable OK", __func__);
++			} else {
++				dev_err(&chip->client->dev,
++					"%s: Regulator vdd disable failed", __func__);
++			}
+ 		} else {
+-			dev_err(&chip->client->dev,
+-				"%s: Regulator vdd disable failed", __func__);
++			chip->unpowered = true;
+ 		}
+ 	}
+ 
+@@ -1303,6 +1308,7 @@
+ 		chip->unpowered = true;
+ 		mutex_unlock(&chip->lock);
+ 	} else {
++		atomic_set(&chip->vdd_enabled, 1);
+ 		if (chip->is_register_regulator_cam_vio_notify) {
+ 			regulator_unregister_notifier(chip->vio,
+ 				&(chip->cam_io_regulator_cb));
+@@ -1382,10 +1388,12 @@
+ 				"%s: Regulator vio disable OK", __func__);
+ 	}
+ 	if (!chip->is_register_regulator_cam_vio_notify) {
+-		if (chip->vdd_supply_enable)
+-			rc = regulator_disable(chip->vdd);
+-		else if (chip->gpio_vdd_enable)
+-			rc = regulator_disable(chip->gpio_vdd);
++		if (atomic_xchg(&chip->vdd_enabled, 0)) {
++			if (chip->vdd_supply_enable)
++				rc = regulator_disable(chip->vdd);
++			else if (chip->gpio_vdd_enable)
++				rc = regulator_disable(chip->gpio_vdd);
++		}
+ 
+ 		if (!rc && !rc2)
+ 			chip->unpowered = true;
