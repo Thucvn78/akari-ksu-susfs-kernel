@@ -1,0 +1,98 @@
+--- a/drivers/media/platform/msm/camera/cam_req_mgr/cam_req_mgr_workq.c	2026-11-24 17:28:07.700396856 +0700
++++ b/drivers/media/platform/msm/camera/cam_req_mgr/cam_req_mgr_workq.c	2026-11-24 17:28:07.700524913 +0700
+@@ -98,8 +98,10 @@
+ static void cam_req_mgr_process_workq(struct work_struct *w)
+ {
+ 	struct cam_req_mgr_core_workq *workq = NULL;
+-	struct crm_workq_task         *task, *task_save;
++	struct crm_workq_task         *task;
+ 	int32_t                        i = CRM_TASK_PRIORITY_0;
++	unsigned long                  flags = 0;
++
+ 	if (!w) {
+ 		CAM_ERR(CAM_CRM, "NULL task pointer can not schedule");
+ 		return;
+@@ -108,14 +110,19 @@
+ 		container_of(w, struct cam_req_mgr_core_workq, work);
+ 
+ 	while (i < CRM_TASK_PRIORITY_MAX) {
+-		if (!list_empty(&workq->task.process_head[i])) {
+-			list_for_each_entry_safe(task, task_save,
+-				&workq->task.process_head[i], entry) {
++		for (;;) {
++			WORKQ_ACQUIRE_LOCK(workq, flags);
++			task = list_first_entry_or_null(
++				&workq->task.process_head[i],
++				struct crm_workq_task, entry);
++			if (task) {
++				list_del_init(&task->entry);
+ 				atomic_sub(1, &workq->task.pending_cnt);
+-				cam_req_mgr_process_task(task);
+ 			}
+-			CAM_DBG(CAM_CRM, "processed task %pK free_cnt %d",
+-				task, atomic_read(&workq->task.free_cnt));
++			WORKQ_RELEASE_LOCK(workq, flags);
++			if (!task)
++				break;
++			cam_req_mgr_process_task(task);
+ 		}
+ 		i++;
+ 	}
+@@ -124,20 +131,29 @@
+ void crm_workq_clear_q(struct cam_req_mgr_core_workq *workq)
+ {
+ 	int32_t                 i = CRM_TASK_PRIORITY_0;
+-	struct crm_workq_task  *task, *task_save;
++	struct crm_workq_task  *task;
++	unsigned long           flags = 0;
+ 
+ 	CAM_DBG(CAM_CRM, "pending_cnt %d",
+ 		atomic_read(&workq->task.pending_cnt));
+ 
+ 	while (i < CRM_TASK_PRIORITY_MAX) {
+-		if (!list_empty(&workq->task.process_head[i])) {
+-			list_for_each_entry_safe(task, task_save,
+-				&workq->task.process_head[i], entry) {
+-				cam_req_mgr_workq_put_task(task);
+-				CAM_WARN(CAM_CRM, "flush task %pK, %d, cnt %d",
+-					task, i, atomic_read(
+-					&workq->task.free_cnt));
++		for (;;) {
++			WORKQ_ACQUIRE_LOCK(workq, flags);
++			task = list_first_entry_or_null(
++				&workq->task.process_head[i],
++				struct crm_workq_task, entry);
++			if (task) {
++				list_del_init(&task->entry);
++				atomic_sub(1, &workq->task.pending_cnt);
+ 			}
++			WORKQ_RELEASE_LOCK(workq, flags);
++			if (!task)
++				break;
++			cam_req_mgr_workq_put_task(task);
++			CAM_WARN(CAM_CRM, "flush task %pK, %d, cnt %d",
++				task, i, atomic_read(
++				&workq->task.free_cnt));
+ 		}
+ 		i++;
+ 	}
+@@ -260,13 +276,15 @@
+ 
+ void cam_req_mgr_workq_destroy(struct cam_req_mgr_core_workq **crm_workq)
+ {
++	struct workqueue_struct *wq;
++
+ 	CAM_DBG(CAM_CRM, "destroy workque %pK", crm_workq);
+ 	if (*crm_workq) {
++		wq = (*crm_workq)->job;
++		(*crm_workq)->job = NULL;
++		if (wq)
++			destroy_workqueue(wq);
+ 		crm_workq_clear_q(*crm_workq);
+-		if ((*crm_workq)->job) {
+-			destroy_workqueue((*crm_workq)->job);
+-			(*crm_workq)->job = NULL;
+-		}
+ /* sony extension begin */
+ 		kfree((*crm_workq)->task.pool);
+ /* sony extension end */
