@@ -1,6 +1,6 @@
 --- a/drivers/input/touchscreen/clearpad_core.c
 +++ b/drivers/input/touchscreen/clearpad_core.c
-@@ -623,6 +623,7 @@ struct clearpad_touchctrl_t {
+@@ -623,6 +623,7 @@
  	const char *session;
  	int power_user; /* reference counter */
  	bool will_powerdown; /* early powerdown callback has been called */
@@ -8,7 +8,7 @@
  };
  
  struct clearpad_interrupt_wait_t {
-@@ -807,6 +808,7 @@ struct clearpad_wakeup_gesture_t {
+@@ -807,6 +808,7 @@
  	unsigned long time_started;
  	u32 timeout_delay;
  	bool use_workaround_for_felica;
@@ -16,7 +16,7 @@
  };
  
  struct clearpad_watchdog_t {
-@@ -2395,6 +2397,7 @@ static int clearpad_disable_wakeup_gesture(struct clearpad_t *this)
+@@ -2395,6 +2397,7 @@
  	case SYN_CHIP_332U:
  		LOGD(this, "already disabled wakeup gesture by HW reset\n");
  		break;
@@ -24,7 +24,7 @@
  	case SYN_CHIP_3500:
  		/* F12_2D_CTRL27_00: Wakeup Gesture Enable */
  		rc = clearpad_put(SYNA(this, F12_2D, CTRL, 27), 0);
-@@ -2884,7 +2887,9 @@ static int clearpad_initialize_if_first_event(struct clearpad_t *this,
+@@ -2884,7 +2887,9 @@
  	int rc = 0;
  	int retry;
  
@@ -35,8 +35,7 @@
  		goto read_interrupt;
  
  	get_monotonic_boottime(&ts);
-@@ -2926,7 +2931,9 @@ read_interrupt:
- 	if (rc) {
+@@ -2926,7 +2931,9 @@
  		HWLOGE(this, "failed to read device status\n");
  		goto end;
  	}
@@ -47,18 +46,18 @@
  		goto end;
  
  	rc = clearpad_initialize(this);
-@@ -5953,6 +5959,10 @@ err_in_check_post_probe:
- 		rc = clearpad_set_suspend_mode(this);
- 		if (rc)
+@@ -5955,6 +5962,10 @@
  			LOGE(this, "failed change suspend mode (rc=%d)\n", rc);
-+	}
+ 
+ 	}
 +	if (!new && this->touchctrl.wakeup_power_locked) {
 +		touchctrl_unlock_power(this, "wakeup_gesture");
 +		this->touchctrl.wakeup_power_locked = false;
- 
- 	}
++	}
  	LOGI(this, "wakeup gesture: %s",
-@@ -7395,35 +7405,36 @@ end:
+ 	     this->wakeup_gesture.enabled ? "ENABLE" : "DISABLE");
+ 
+@@ -7395,36 +7406,36 @@
  
  static int clearpad_pm_suspend(struct device *dev)
  {
@@ -104,14 +103,15 @@
  	return 0;
  }
  
-@@ -7480,8 +7491,17 @@ end:
+@@ -7480,8 +7491,19 @@
  static void clearpad_cb_early_powerdown_handler(struct clearpad_t *this)
  {
  	LOCK(&this->lock);
 -	if (this->wakeup_gesture.enabled)
 +	if (this->wakeup_gesture.enabled) {
 +		if (!this->touchctrl.wakeup_power_locked) {
-+			if (touchctrl_lock_power(this, "wakeup_gesture", true, false))
++			if (touchctrl_lock_power(this, "wakeup_gesture",
++						 true, false))
 +				this->touchctrl.wakeup_power_locked = true;
 +		}
 +		this->touchctrl.will_powerdown = true;
@@ -124,7 +124,7 @@
  
  	clearpad_powerdown_core(this, "EARLY POWERDOWN");
  end:
-@@ -7493,7 +7513,7 @@ end:
+@@ -7493,7 +7515,7 @@
  static void clearpad_cb_powerdown_handler(struct clearpad_t *this)
  {
  	LOCK(&this->lock);
@@ -133,7 +133,7 @@
  		clearpad_powerdown_core(this, "POWERDOWN");
  	this->wakeup.unblank_done = false;
  	UNLOCK(&this->lock);
-@@ -9376,6 +9396,10 @@ static void clearpad_thread_resume_work(struct work_struct *work)
+@@ -9376,6 +9398,10 @@
  	locked = touchctrl_lock_power(this, "cb_unblank", true, false);
  	if (!locked) {
  		HWLOGW(this, "power is already turned off");
@@ -144,7 +144,7 @@
  		goto end;
  	}
  
-@@ -9401,6 +9425,10 @@ static void clearpad_thread_resume_work(struct work_struct *work)
+@@ -9401,6 +9427,10 @@
  		}
  
  		touchctrl_unlock_power(this, "cb_unblank");
