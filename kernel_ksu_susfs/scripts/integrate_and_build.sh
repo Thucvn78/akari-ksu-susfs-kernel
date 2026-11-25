@@ -107,6 +107,7 @@ cp -f "${SRC_CACHE}/susfs4ksu/kernel_patches/include/linux/"* "${BUILD_SRC}/incl
 # Patch KernelSU-Next v3.4-legacy with SUSFS v2.3.0 integration
 patch --batch -p1 -d "${BUILD_SRC}/KernelSU-Next" < "${KSU_ROOT}/patches/10_enable_susfs_v2.3.0_for_ksu_next_v3.4.2_legacy.patch"
 patch --batch -p1 -d "${BUILD_SRC}/KernelSU-Next" < "${KSU_ROOT}/patches/30_fix_ksu_allowlist_and_app_su.patch"
+patch --batch -p1 -d "${BUILD_SRC}/KernelSU-Next" < "${KSU_ROOT}/patches/31_fix_ksu_zygote_no_su.patch"
 
 # Patch Sony 4.9.186 kernel with dtc host compat, manual KSU hooks, and SUSFS v2.3.0 backport
 patch --batch -p1 -d "${BUILD_SRC}" < "${KSU_ROOT}/patches/00_kernel_4.9_dtc_host_compat.patch"
