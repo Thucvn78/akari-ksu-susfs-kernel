@@ -119,6 +119,7 @@ patch --batch -p1 -d "${BUILD_SRC}" < "${KSU_ROOT}/patches/62_fix_camera_cci_tcs
 patch --batch -p1 -d "${BUILD_SRC}" < "${KSU_ROOT}/patches/63_fix_cam_crm_workq_lock_and_wakelock.patch"
 patch --batch -p1 -d "${BUILD_SRC}" < "${KSU_ROOT}/patches/64_fix_cam_crm_apply_req_err.patch"
 patch --batch -p1 -d "${BUILD_SRC}" < "${KSU_ROOT}/patches/65_fix_clearpad_wakeup_gesture_td4353.patch"
+patch --batch -p1 -d "${BUILD_SRC}" < "${KSU_ROOT}/patches/66_fix_cam_icp_recovery_and_hfi.patch"
 
 # Verify zero reject files
 if find "${BUILD_SRC}" -name "*.rej" | grep -q .; then
